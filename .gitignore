@@ -7,6 +7,9 @@ application-local.properties
 !application-local.properties.example
 *.env
 .env
+
+### macOS ###
+.DS_Store
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
