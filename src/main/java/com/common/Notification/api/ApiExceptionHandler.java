@@ -2,6 +2,7 @@ package com.common.Notification.api;
 
 import com.common.Notification.exception.RateLimitExceededException;
 import com.common.Notification.exception.TemplateNotFoundException;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -36,6 +37,30 @@ public class ApiExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Invalid notification request");
         // Field names and constraint messages only; never the rejected values.
+        problem.setProperty("errors", errors);
+        return problem;
+    }
+
+    /**
+     * Raised by method validation on {@code NotificationService.submit}. This is where REST
+     * validation failures now surface, since the constraints live on the command rather than on
+     * the request DTO.
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    ProblemDetail onConstraintViolation(ConstraintViolationException ex) {
+        Map<String, String> errors = new LinkedHashMap<>();
+        ex.getConstraintViolations().forEach(violation -> {
+            String path = violation.getPropertyPath().toString();
+            // Method validation prefixes the path with "submit.command."; callers care about
+            // the field, not our method signature.
+            String field = path.substring(path.lastIndexOf('.') + 1);
+            errors.put(field, violation.getMessage());
+        });
+
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid notification request");
+        // Field names and constraint messages only; getInvalidValue() is deliberately not used,
+        // because one of those values is the recipient.
         problem.setProperty("errors", errors);
         return problem;
     }

@@ -4,7 +4,6 @@ import com.common.Notification.api.dto.NotificationRequest;
 import com.common.Notification.api.dto.NotificationResponse;
 import com.common.Notification.domain.NotificationRecord;
 import com.common.Notification.service.NotificationService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -33,8 +32,9 @@ public class NotificationController {
      * request was durably accepted and queued. Poll the GET endpoint for the outcome.
      */
     @PostMapping
-    public ResponseEntity<NotificationResponse> submit(@Valid @RequestBody NotificationRequest request) {
-        NotificationRecord record = notificationService.submit(request);
+    public ResponseEntity<NotificationResponse> submit(@RequestBody NotificationRequest request) {
+        // Validation happens on the command inside the service, so both entry points share it.
+        NotificationRecord record = notificationService.submit(request.toCommand());
         return ResponseEntity.accepted().body(NotificationResponse.from(record));
     }
 

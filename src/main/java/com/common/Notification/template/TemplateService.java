@@ -1,7 +1,6 @@
 package com.common.Notification.template;
 
 import com.common.Notification.domain.Channel;
-import com.common.Notification.domain.NotificationTemplate;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -25,7 +24,7 @@ public class TemplateService {
 
     private final TemplateLookup templateLookup;
 
-    public NotificationTemplate find(String code, Channel channel) {
+    public TemplateView find(String code, Channel channel) {
         return templateLookup.find(code, channel);
     }
 
@@ -34,10 +33,10 @@ public class TemplateService {
     }
 
     public Rendered render(String code, Channel channel, Map<String, Object> variables) {
-        NotificationTemplate template = templateLookup.find(code, channel);
+        TemplateView template = templateLookup.find(code, channel);
         return new Rendered(
-                substitute(template.getSubject(), variables),
-                substitute(template.getBody(), variables)
+                substitute(template.subject(), variables),
+                substitute(template.body(), variables)
         );
     }
 

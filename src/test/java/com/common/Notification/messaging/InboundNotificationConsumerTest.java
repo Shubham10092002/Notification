@@ -1,114 +1,77 @@
 package com.common.Notification.messaging;
 
-import com.common.Notification.api.dto.NotificationRequest;
 import com.common.Notification.domain.Channel;
+import com.common.Notification.domain.SendNotificationCommand;
 import com.common.Notification.exception.InvalidNotificationEventException;
 import com.common.Notification.service.NotificationService;
-import jakarta.validation.Validation;
-import jakarta.validation.Validator;
-import jakarta.validation.ValidatorFactory;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
- * Uses a real validator rather than a mock — the point of these tests is that the constraints
- * declared on {@link NotificationRequest} actually fire on the Kafka path, which a stubbed
- * validator could not demonstrate.
+ * The consumer owns the wire contract only. Field-level validation is enforced by method
+ * validation on {@code NotificationService}, so it is covered by
+ * {@link com.common.Notification.domain.SendNotificationCommandValidationTest} rather than here.
  */
 @ExtendWith(MockitoExtension.class)
 class InboundNotificationConsumerTest {
-
-    private static ValidatorFactory validatorFactory;
-    private static Validator validator;
 
     @Mock
     private NotificationService notificationService;
 
     private InboundNotificationConsumer consumer;
 
-    @BeforeAll
-    static void startValidator() {
-        validatorFactory = Validation.buildDefaultValidatorFactory();
-        validator = validatorFactory.getValidator();
-    }
-
-    @AfterAll
-    static void stopValidator() {
-        validatorFactory.close();
-    }
-
     @BeforeEach
     void setUp() {
-        consumer = new InboundNotificationConsumer(notificationService, validator);
+        consumer = new InboundNotificationConsumer(notificationService);
     }
 
-    private InboundNotificationEvent event(String requestId, Channel channel, String recipient) {
-        return new InboundNotificationEvent(
-                requestId, "order-service", channel, recipient, "WELCOME", Map.of("name", "Jane"));
-    }
-
-    @Test
-    @DisplayName("a valid event is submitted")
-    void submitsValidEvent() {
-        consumer.onInboundRequest(event("req-1", Channel.EMAIL, "jane@example.com"));
-
-        verify(notificationService).submit(any(NotificationRequest.class));
+    private InboundNotificationEvent event(Integer schemaVersion) {
+        return new InboundNotificationEvent(schemaVersion, "req-1", "order-service",
+                Channel.EMAIL, "jane@example.com", "WELCOME", Map.of("name", "Jane"));
     }
 
     @Test
-    @DisplayName("a null requestId is rejected — it would silently defeat idempotency")
-    void rejectsNullRequestId() {
-        assertThatThrownBy(() -> consumer.onInboundRequest(event(null, Channel.EMAIL, "jane@example.com")))
+    @DisplayName("a current-version event is mapped to a command and submitted")
+    void submitsCurrentVersion() {
+        consumer.onInboundRequest(event(InboundNotificationEvent.CURRENT_SCHEMA_VERSION));
+
+        ArgumentCaptor<SendNotificationCommand> captor =
+                ArgumentCaptor.forClass(SendNotificationCommand.class);
+        verify(notificationService).submit(captor.capture());
+        assertThat(captor.getValue().requestId()).isEqualTo("req-1");
+        assertThat(captor.getValue().channel()).isEqualTo(Channel.EMAIL);
+    }
+
+    @Test
+    @DisplayName("an absent schemaVersion is treated as v1, for publishers predating the field")
+    void treatsMissingVersionAsV1() {
+        consumer.onInboundRequest(event(null));
+
+        verify(notificationService).submit(any(SendNotificationCommand.class));
+    }
+
+    @Test
+    @DisplayName("a future schemaVersion is rejected rather than mis-parsed")
+    void rejectsUnknownSchemaVersion() {
+        assertThatThrownBy(() -> consumer.onInboundRequest(event(2)))
                 .isInstanceOf(InvalidNotificationEventException.class)
-                .hasMessageContaining("requestId");
+                .hasMessageContaining("schemaVersion=2");
 
-        // Without validation this reached submit(), where findByRequestId(null) matches nothing,
-        // so every redelivery inserted a new row and sent the notification again.
+        // Better a diagnosable DLT entry than silently reading a payload whose meaning changed.
         verify(notificationService, never()).submit(any());
-    }
-
-    @Test
-    @DisplayName("a null channel is rejected rather than failing deep in persistence")
-    void rejectsNullChannel() {
-        assertThatThrownBy(() -> consumer.onInboundRequest(event("req-1", null, "jane@example.com")))
-                .isInstanceOf(InvalidNotificationEventException.class)
-                .hasMessageContaining("channel");
-
-        verify(notificationService, never()).submit(any());
-    }
-
-    @Test
-    @DisplayName("an oversized recipient is rejected before it hits a column limit")
-    void rejectsOversizedRecipient() {
-        String tooLong = "a".repeat(321) + "@example.com";
-
-        assertThatThrownBy(() -> consumer.onInboundRequest(event("req-1", Channel.EMAIL, tooLong)))
-                .isInstanceOf(InvalidNotificationEventException.class)
-                .hasMessageContaining("recipient");
-
-        verify(notificationService, never()).submit(any());
-    }
-
-    @Test
-    @DisplayName("the rejection message names fields but never their values")
-    void rejectionDoesNotLeakRecipient() {
-        assertThatThrownBy(() -> consumer.onInboundRequest(event(null, Channel.EMAIL, "jane@example.com")))
-                .isInstanceOf(InvalidNotificationEventException.class)
-                // Recipients are PII and must not travel into logs or DLT headers.
-                .hasMessageNotContaining("jane@example.com");
     }
 
     @Test
@@ -118,5 +81,13 @@ class InboundNotificationConsumerTest {
                 .isInstanceOf(InvalidNotificationEventException.class);
 
         verify(notificationService, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("the rejection message never contains the recipient")
+    void rejectionDoesNotLeakRecipient() {
+        assertThatThrownBy(() -> consumer.onInboundRequest(event(99)))
+                .isInstanceOf(InvalidNotificationEventException.class)
+                .hasMessageNotContaining("jane@example.com");
     }
 }

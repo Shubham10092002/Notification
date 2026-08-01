@@ -1,7 +1,7 @@
 package com.common.Notification.messaging;
 
 import com.common.Notification.domain.Channel;
-import com.common.Notification.service.NotificationAcceptedEvent;
+import com.common.Notification.domain.event.NotificationAcceptedEvent;
 import com.common.Notification.service.NotificationStateWriter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -45,7 +45,12 @@ public class NotificationDispatcher {
         this.callbackExecutor = callbackExecutor;
     }
 
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    /**
+     * {@code fallbackExecution = true} because replay publishes this event outside a transaction
+     * — its state reset already committed in its own. Without the fallback the listener would
+     * silently not fire and replayed notifications would never reach Kafka.
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onNotificationAccepted(NotificationAcceptedEvent event) {
         dispatch(event.notificationId(), event.channel());
     }

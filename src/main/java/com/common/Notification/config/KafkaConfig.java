@@ -2,19 +2,26 @@ package com.common.Notification.config;
 
 import com.common.Notification.exception.InvalidNotificationEventException;
 import com.common.Notification.exception.TemplateNotFoundException;
+import com.common.Notification.channel.ChannelSender;
 import com.common.Notification.messaging.KafkaTopics;
+import jakarta.validation.ConstraintViolationException;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.TopicConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
+import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.support.converter.ByteArrayJacksonJsonMessageConverter;
 import org.springframework.kafka.support.mapping.JacksonJavaTypeMapper;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.ExponentialBackOff;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Wires the doc's Retry and DLQ concepts.
@@ -32,30 +39,43 @@ public class KafkaConfig {
     /**
      * Topics are created explicitly rather than relying on broker auto-creation, which defaults
      * to one partition and would cap worker parallelism at one.
+     *
+     * <p>Channel topics are derived from the registered {@link ChannelSender} beans, so adding a
+     * channel does not mean remembering to add two more topic beans here.
+     *
+     * <p>Replication is configuration-driven. It used to be hardcoded to 1, which would have
+     * created single-replica topics on a production cluster — one broker failure away from losing
+     * every unconsumed notification, on a platform whose whole purpose is not losing them. With
+     * {@code acks=all} already set, replicas=3 and minInSync=2 is what makes that setting mean
+     * something.
      */
     @Bean
-    NewTopic inboundRequestsTopic(@Value("${notification.kafka.partitions:3}") int partitions) {
-        return TopicBuilder.name(KafkaTopics.INBOUND_REQUESTS).partitions(partitions).replicas(1).build();
+    KafkaAdmin.NewTopics notificationTopics(
+            List<ChannelSender> channelSenders,
+            @Value("${notification.kafka.partitions:3}") int partitions,
+            @Value("${notification.kafka.replicas:1}") int replicas,
+            @Value("${notification.kafka.min-insync-replicas:1}") int minInSync) {
+
+        List<NewTopic> topics = new ArrayList<>();
+        topics.add(topic(KafkaTopics.INBOUND_REQUESTS, partitions, replicas, minInSync));
+        topics.add(topic(KafkaTopics.dltFor(KafkaTopics.INBOUND_REQUESTS), 1, replicas, minInSync));
+
+        for (ChannelSender sender : channelSenders) {
+            String channelTopic = KafkaTopics.forChannel(sender.channel());
+            topics.add(topic(channelTopic, partitions, replicas, minInSync));
+            // Single-partition DLT: volume is low and ordering there is irrelevant.
+            topics.add(topic(KafkaTopics.dltFor(channelTopic), 1, replicas, minInSync));
+        }
+
+        return new KafkaAdmin.NewTopics(topics.toArray(NewTopic[]::new));
     }
 
-    @Bean
-    NewTopic emailTopic(@Value("${notification.kafka.partitions:3}") int partitions) {
-        return TopicBuilder.name(KafkaTopics.EMAIL).partitions(partitions).replicas(1).build();
-    }
-
-    @Bean
-    NewTopic smsTopic(@Value("${notification.kafka.partitions:3}") int partitions) {
-        return TopicBuilder.name(KafkaTopics.SMS).partitions(partitions).replicas(1).build();
-    }
-
-    /**
-     * The inbound topic needs a DLT too. Without it, a malformed event from another service is
-     * recovered onto a topic that does not exist and nobody consumes.
-     */
-    @Bean
-    NewTopic inboundRequestsDltTopic() {
-        return TopicBuilder.name(KafkaTopics.INBOUND_REQUESTS + KafkaTopics.DLT_SUFFIX)
-                .partitions(1).replicas(1).build();
+    private static NewTopic topic(String name, int partitions, int replicas, int minInSync) {
+        return TopicBuilder.name(name)
+                .partitions(partitions)
+                .replicas(replicas)
+                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, String.valueOf(minInSync))
+                .build();
     }
 
     /**
@@ -70,16 +90,6 @@ public class KafkaConfig {
     }
 
     @Bean
-    NewTopic emailDltTopic() {
-        return TopicBuilder.name(KafkaTopics.EMAIL + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
-    }
-
-    @Bean
-    NewTopic smsDltTopic() {
-        return TopicBuilder.name(KafkaTopics.SMS + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
-    }
-
-    @Bean
     DefaultErrorHandler notificationErrorHandler(
             KafkaOperations<?, ?> kafkaOperations,
             @Value("${notification.retry.initial-interval-ms:1000}") long initialInterval,
@@ -90,7 +100,7 @@ public class KafkaConfig {
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaOperations,
                 // Single-partition DLT: volume is low and ordering there is irrelevant.
-                (record, ex) -> new TopicPartition(record.topic() + KafkaTopics.DLT_SUFFIX, 0));
+                (record, ex) -> new TopicPartition(KafkaTopics.dltFor(record.topic()), 0));
 
         ExponentialBackOff backOff = new ExponentialBackOff();
         backOff.setInitialInterval(initialInterval);
@@ -104,7 +114,10 @@ public class KafkaConfig {
         // blocks the partition behind it.
         errorHandler.addNotRetryableExceptions(
                 TemplateNotFoundException.class,
-                InvalidNotificationEventException.class);
+                InvalidNotificationEventException.class,
+                // Method validation on the service. A payload that fails constraints will fail
+                // them identically on redelivery.
+                ConstraintViolationException.class);
 
         return errorHandler;
     }

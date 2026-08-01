@@ -2,6 +2,7 @@ package com.common.Notification.service;
 
 import com.common.Notification.domain.NotificationRecord;
 import com.common.Notification.domain.NotificationRepository;
+import com.common.Notification.domain.event.NotificationAcceptedEvent;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;

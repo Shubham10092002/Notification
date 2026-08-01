@@ -12,15 +12,14 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-import java.io.Serializable;
-
 /**
  * A reusable message template, owned by the Template Service in the design doc.
  *
  * <p>Bodies use {@code {{placeholder}}} syntax; see
  * {@link com.common.Notification.template.TemplateService} for rendering.
  *
- * <p>Serializable because instances are cached in Redis.
+ * <p>Not cached directly: {@code TemplateView} is what goes into Redis, so this stays a plain
+ * persistence type.
  */
 @Entity
 @Table(
@@ -30,7 +29,7 @@ import java.io.Serializable;
 @Getter
 @Setter
 @NoArgsConstructor
-public class NotificationTemplate implements Serializable {
+public class NotificationTemplate {
 
     @Id
     @Column(name = "id", length = 36, nullable = false, updatable = false)

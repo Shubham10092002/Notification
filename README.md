@@ -160,7 +160,13 @@ POST /api/v1/notifications/{notificationId}/replay
 ### Kafka entry point
 
 Publish an `InboundNotificationEvent` to `notification.requests` with the same fields as the
-REST body. Set `requestId` — redelivery without it means duplicate sends.
+REST body, plus `schemaVersion` (currently `1`; absent is treated as `1`). Set `requestId` —
+redelivery without it means duplicate sends.
+
+Both entry points validate against the same constraints, declared once on
+`SendNotificationCommand` and enforced by method validation on the service. Events failing
+validation or carrying an unknown `schemaVersion` are non-retryable and go straight to
+`notification.requests.DLT`.
 
 ## Configuration
 
@@ -182,15 +188,18 @@ Everything below is overridable by environment variable.
 | `notification.circuit-breaker.open-seconds` | `30` | How long the breaker stays open before probing |
 | `NOTIFICATION_API_USER` / `NOTIFICATION_API_PASSWORD` | — | HTTP Basic credential; **startup fails without the password** |
 | `KAFKA_LISTENER_CONCURRENCY` | `3` | Consumer threads per listener |
+| `KAFKA_TOPIC_REPLICAS` / `KAFKA_MIN_ISR` | `1` / `1` | **Local defaults.** Production needs `3` / `2`, or `acks=all` is meaningless |
 | `notification.sweeper.stuck-after-seconds` | `60` | Age at which an `ACCEPTED` row is republished |
 
 ## Adding a channel
 
 1. Add the value to `Channel`.
 2. Implement `ChannelSender` for it.
-3. Add a topic in `KafkaTopics` + `KafkaConfig`, and a worker modelled on `SmsWorker`.
+3. Add a worker modelled on `SmsWorker`.
+4. Add `notification.rate-limit.channels.<CHANNEL>.permits` / `.window` to configuration.
 
-Nothing in the accept path changes.
+Topics are derived from the registered senders and created automatically; the rate limiter falls
+back to `default-limit` if step 4 is missed. Nothing in the accept path changes.
 
 ## Known gaps
 

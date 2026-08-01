@@ -1,7 +1,6 @@
 package com.common.Notification.template;
 
 import com.common.Notification.domain.Channel;
-import com.common.Notification.domain.NotificationTemplate;
 import com.common.Notification.domain.TemplateRepository;
 import com.common.Notification.exception.TemplateNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +15,8 @@ import org.springframework.stereotype.Component;
  * call from another method of the <em>same</em> class bypasses it entirely. Keeping the cached
  * method here forces {@link TemplateService} to call it through the proxy, which is the only
  * way the Redis cache is actually consulted.
+ *
+ * <p>Returns a {@link TemplateView} rather than the entity — see that class for why.
  */
 @Component
 @RequiredArgsConstructor
@@ -24,8 +25,9 @@ public class TemplateLookup {
     private final TemplateRepository templateRepository;
 
     @Cacheable(cacheNames = "templates", key = "#code + ':' + #channel")
-    public NotificationTemplate find(String code, Channel channel) {
+    public TemplateView find(String code, Channel channel) {
         return templateRepository.findByCodeAndChannelAndActiveIsTrue(code, channel)
+                .map(TemplateView::from)
                 .orElseThrow(() -> new TemplateNotFoundException(code, channel));
     }
 

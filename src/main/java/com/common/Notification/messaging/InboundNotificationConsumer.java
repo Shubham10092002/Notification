@@ -1,27 +1,22 @@
 package com.common.Notification.messaging;
 
-import com.common.Notification.api.dto.NotificationRequest;
 import com.common.Notification.exception.InvalidNotificationEventException;
 import com.common.Notification.service.NotificationService;
-import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
-import java.util.Set;
-import java.util.stream.Collectors;
-
 /**
  * The event-driven entry point: other services publish to {@code notification.requests} instead
  * of calling the REST API. Both paths funnel into the same {@link NotificationService#submit}.
  *
- * <p>Validation is applied explicitly here. The REST boundary gets it from {@code @Valid} on the
- * controller, and without the equivalent on this side the two entry points would enforce
- * different contracts — most damagingly, an event with a null {@code requestId} would defeat
- * idempotency entirely, because {@code findByRequestId(null)} matches nothing and every
- * redelivery would send again.
+ * <p>No validation logic here. The command carries the constraints and the service is
+ * {@code @Validated}, so this path is checked by exactly the same rules as the REST body — the
+ * two boundaries cannot drift apart, because there is only one set of rules.
+ *
+ * <p>What this class does own is the wire contract: rejecting a schema version it was not
+ * written to understand, rather than silently mis-parsing it.
  */
 @Component
 @RequiredArgsConstructor
@@ -29,7 +24,6 @@ import java.util.stream.Collectors;
 public class InboundNotificationConsumer {
 
     private final NotificationService notificationService;
-    private final Validator validator;
 
     @KafkaListener(
             topics = KafkaTopics.INBOUND_REQUESTS,
@@ -40,29 +34,19 @@ public class InboundNotificationConsumer {
             throw new InvalidNotificationEventException("Empty inbound notification event");
         }
 
-        log.debug("Inbound notification request requestId={} channel={}",
-                event.requestId(), event.channel());
-
-        NotificationRequest request = new NotificationRequest(
-                event.requestId(),
-                event.sourceService(),
-                event.channel(),
-                event.recipient(),
-                event.templateCode(),
-                event.variables()
-        );
-
-        Set<ConstraintViolation<NotificationRequest>> violations = validator.validate(request);
-        if (!violations.isEmpty()) {
-            // Field names and messages only — never the offending values, which include the
-            // recipient.
-            String detail = violations.stream()
-                    .map(violation -> violation.getPropertyPath() + " " + violation.getMessage())
-                    .sorted()
-                    .collect(Collectors.joining("; "));
-            throw new InvalidNotificationEventException("Invalid inbound event: " + detail);
+        int version = event.effectiveSchemaVersion();
+        if (version != InboundNotificationEvent.CURRENT_SCHEMA_VERSION) {
+            // Fail loudly rather than parse a payload whose meaning may have changed. A publisher
+            // that has moved ahead of this consumer gets a diagnosable DLT entry, not corrupt data.
+            throw new InvalidNotificationEventException(
+                    "Unsupported inbound event schemaVersion=" + version
+                            + " (this consumer understands "
+                            + InboundNotificationEvent.CURRENT_SCHEMA_VERSION + ")");
         }
 
-        notificationService.submit(request);
+        log.debug("Inbound notification request requestId={} channel={} schemaVersion={}",
+                event.requestId(), event.channel(), version);
+
+        notificationService.submit(event.toCommand());
     }
 }

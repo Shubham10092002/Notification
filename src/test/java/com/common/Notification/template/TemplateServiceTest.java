@@ -1,7 +1,6 @@
 package com.common.Notification.template;
 
 import com.common.Notification.domain.Channel;
-import com.common.Notification.domain.NotificationTemplate;
 import com.common.Notification.exception.TemplateNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -32,12 +31,8 @@ class TemplateServiceTest {
     }
 
     private void stubTemplate(String subject, String body) {
-        NotificationTemplate template = new NotificationTemplate();
-        template.setCode("WELCOME");
-        template.setChannel(Channel.EMAIL);
-        template.setSubject(subject);
-        template.setBody(body);
-        when(templateLookup.find("WELCOME", Channel.EMAIL)).thenReturn(template);
+        when(templateLookup.find("WELCOME", Channel.EMAIL))
+                .thenReturn(new TemplateView("WELCOME", Channel.EMAIL, subject, body));
     }
 
     @Test

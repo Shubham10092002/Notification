@@ -1,11 +1,12 @@
 package com.common.Notification.service;
 
-import com.common.Notification.api.dto.NotificationRequest;
+import com.common.Notification.domain.SendNotificationCommand;
 import com.common.Notification.domain.Channel;
 import com.common.Notification.domain.NotificationRecord;
 import com.common.Notification.domain.NotificationRepository;
 import com.common.Notification.domain.NotificationStatus;
-import com.common.Notification.messaging.NotificationDispatcher;
+import com.common.Notification.domain.event.NotificationAcceptedEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import com.common.Notification.template.TemplateService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,13 +38,13 @@ class NotificationServiceTest {
     @Mock
     private NotificationStateWriter stateWriter;
     @Mock
-    private NotificationDispatcher dispatcher;
+    private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private NotificationService notificationService;
 
-    private NotificationRequest request(Channel channel) {
-        return new NotificationRequest(
+    private SendNotificationCommand request(Channel channel) {
+        return new SendNotificationCommand(
                 "req-1", "payment-service", channel,
                 channel == Channel.SMS ? "+919876543210" : "jane@example.com",
                 "WELCOME", Map.of("name", "Jane"));
@@ -132,14 +133,14 @@ class NotificationServiceTest {
     }
 
     @Test
-    @DisplayName("replay only republishes a record the writer agreed to reset")
+    @DisplayName("replay only publishes for a record the writer agreed to reset")
     void replayRespectsTerminalState() {
         NotificationRecord record = record(Channel.EMAIL);
         when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
         when(stateWriter.resetForReplay(record.getId())).thenReturn(false);
 
         assertThat(notificationService.replay(record.getId())).isFalse();
-        verify(dispatcher, never()).dispatch(any(), any());
+        verify(eventPublisher, never()).publishEvent(any(NotificationAcceptedEvent.class));
     }
 
     @Test
@@ -150,6 +151,6 @@ class NotificationServiceTest {
         when(stateWriter.resetForReplay(record.getId())).thenReturn(true);
 
         assertThat(notificationService.replay(record.getId())).isTrue();
-        verify(dispatcher).dispatch(record.getId(), Channel.EMAIL);
+        verify(eventPublisher).publishEvent(new NotificationAcceptedEvent(record.getId(), Channel.EMAIL));
     }
 }

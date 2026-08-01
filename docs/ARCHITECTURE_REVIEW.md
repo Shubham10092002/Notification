@@ -2,8 +2,9 @@
 
 Reviewed at commit `8a5bf16`. 44 source files, ~1,900 lines.
 
-> **Status:** findings 1–5 (Critical and High) are **fixed** — see the "Fixed" markers below.
-> Findings 6–20 remain open.
+> **Status:** findings 1–9, 11 and 12 are **fixed**. Finding 10 is **partially done** — the
+> projection type exists but the repository and sweeper still use full entities. Findings 13–20
+> remain open.
 
 Findings are ranked by what they cost you in production, not by how interesting they are.
 Dimensions where the code is already sound are listed at the end rather than padded with
@@ -16,13 +17,13 @@ invented problems.
 | 3 | ✅ Kafka entry point bypasses all validation | Validation | **High** | Yes |
 | 4 | ✅ No Circuit Breaker on provider calls | Circuit Breaker | **High** | Yes |
 | 5 | ✅ Exception handling gaps — unmapped exceptions become 500s | Exception handling | **High** | Yes |
-| 6 | Circular package dependency `service` ↔ `messaging` | Circular deps | Medium | Yes |
-| 7 | Service and messaging layers depend on a web DTO | Coupling, Package structure | Medium | Yes |
-| 8 | Adding a channel requires editing 5 files | SOLID (OCP) | Medium | Yes |
-| 9 | A JPA entity is cached in Redis | Redis strategy | Medium | Yes |
-| 10 | Sweeper loads `@Lob` bodies to read two fields | Memory | Medium | Yes |
-| 11 | `replicas(1)` hardcoded in topic definitions | Kafka design | Medium | Yes |
-| 12 | No schema version on the public inbound event | EDA | Medium | Yes |
+| 6 | ✅ Circular package dependency `service` ↔ `messaging` | Circular deps | Medium | Yes |
+| 7 | ✅ Service and messaging layers depend on a web DTO | Coupling, Package structure | Medium | Yes |
+| 8 | ✅ Adding a channel requires editing 5 files | SOLID (OCP) | Medium | Yes |
+| 9 | ✅ A JPA entity is cached in Redis | Redis strategy | Medium | Yes |
+| 10 | ⚠️ Sweeper loads `@Lob` bodies to read two fields | Memory | Medium | Yes |
+| 11 | ✅ `replicas(1)` hardcoded in topic definitions | Kafka design | Medium | Yes |
+| 12 | ✅ No schema version on the public inbound event | EDA | Medium | Yes |
 | 13 | 7-parameter static factory invites transposed arguments | Builder | Low | Judgement call |
 | 14 | No outbound delivery-outcome events | EDA opportunity | Low | Yes, when asked for |
 | 15 | Field injection in the sweeper | DI | Low | Yes, trivial |
@@ -353,7 +354,7 @@ logging at ERROR with the stack trace.
 
 ---
 
-## 6. Circular package dependency: `service` ↔ `messaging`
+## 6. ✅ FIXED — Circular package dependency: `service` ↔ `messaging`
 
 **Problem.** Measured import graph:
 
@@ -417,7 +418,7 @@ logic in the process.
 
 ---
 
-## 7. Service and messaging layers depend on a web DTO
+## 7. ✅ FIXED — Service and messaging layers depend on a web DTO
 
 **Problem.** `NotificationService.submit` takes `com.common.Notification.api.dto.NotificationRequest`.
 So does `InboundNotificationConsumer` — a Kafka listener importing a web DTO to call a service.
@@ -465,7 +466,7 @@ together they fix the validation gap *and* the layering in one change.
 
 ---
 
-## 8. Adding a channel requires editing five files (OCP violation)
+## 8. ✅ FIXED — Adding a channel requires editing five files (OCP violation)
 
 **Problem.** The README claims adding a channel is: add the enum value, implement `ChannelSender`,
 add a worker. Actually required:
@@ -551,7 +552,7 @@ anything with two values.
 
 ---
 
-## 9. A JPA entity is cached in Redis
+## 9. ✅ FIXED — A JPA entity is cached in Redis
 
 **Problem.** `TemplateLookup.find` is `@Cacheable` and returns `NotificationTemplate`, a
 `@Entity`. Hibernate-managed objects are serialised to Redis and deserialised back as detached
@@ -596,7 +597,7 @@ safe, smaller payload.
 
 ---
 
-## 10. The sweeper loads `@Lob` bodies to read two fields
+## 10. ⚠️ PARTIAL — The sweeper loads `@Lob` bodies to read two fields
 
 **Problem.** `findTop200ByStatusAndCreatedAtBeforeOrderByCreatedAtAsc` returns full
 `NotificationRecord` entities. The loop uses only `getId()` and `getChannel()`.
@@ -630,9 +631,14 @@ No behaviour change.
 
 **Verdict. Yes.** One-line interface, meaningful benefit exactly when the system is under stress.
 
+> **Partially applied.** `NotificationDispatchView` exists, but `NotificationRepository` still
+> returns `List<NotificationRecord>` and `StuckNotificationSweeper` still iterates entities, so
+> the memory benefit is not yet realised. Switching the return type and the sweeper's loop
+> variable completes it.
+
 ---
 
-## 11. `replicas(1)` hardcoded in topic definitions
+## 11. ✅ FIXED — `replicas(1)` hardcoded in topic definitions
 
 **Problem.** All five `NewTopic` beans hardcode `.replicas(1)`.
 
@@ -671,7 +677,7 @@ definitions.
 
 ---
 
-## 12. No schema version on the public inbound event
+## 12. ✅ FIXED — No schema version on the public inbound event
 
 **Problem.** `InboundNotificationEvent` is the contract every other service publishes against.
 It has no version field, and with `spring.json.add.type.headers=false` there is no type header
