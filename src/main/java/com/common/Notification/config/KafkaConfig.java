@@ -9,6 +9,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaOperations;
+import org.springframework.kafka.support.converter.ByteArrayJacksonJsonMessageConverter;
+import org.springframework.kafka.support.mapping.JacksonJavaTypeMapper;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.ExponentialBackOff;
@@ -43,6 +45,27 @@ public class KafkaConfig {
     @Bean
     NewTopic smsTopic(@Value("${notification.kafka.partitions:3}") int partitions) {
         return TopicBuilder.name(KafkaTopics.SMS).partitions(partitions).replicas(1).build();
+    }
+
+    /**
+     * The inbound topic needs a DLT too. Without it, a malformed event from another service is
+     * recovered onto a topic that does not exist and nobody consumes.
+     */
+    @Bean
+    NewTopic inboundRequestsDltTopic() {
+        return TopicBuilder.name(KafkaTopics.INBOUND_REQUESTS + KafkaTopics.DLT_SUFFIX)
+                .partitions(1).replicas(1).build();
+    }
+
+    /**
+     * Deserializes each record using the listener method's parameter type instead of a type
+     * header, so services written in any language can publish plain JSON to the inbound topic.
+     */
+    @Bean
+    ByteArrayJacksonJsonMessageConverter kafkaMessageConverter() {
+        ByteArrayJacksonJsonMessageConverter converter = new ByteArrayJacksonJsonMessageConverter();
+        converter.getTypeMapper().setTypePrecedence(JacksonJavaTypeMapper.TypePrecedence.INFERRED);
+        return converter;
     }
 
     @Bean

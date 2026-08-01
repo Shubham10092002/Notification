@@ -38,6 +38,21 @@ public class NotificationController {
         return ResponseEntity.accepted().body(NotificationResponse.from(record));
     }
 
+    /**
+     * Replays a dead-lettered notification after the underlying problem is fixed.
+     *
+     * @return 204 on success, 409 if the notification is not in DEAD_LETTER, 404 if unknown.
+     */
+    @PostMapping("/{notificationId}/replay")
+    public ResponseEntity<Void> replay(@PathVariable String notificationId) {
+        if (notificationService.findById(notificationId).isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        return notificationService.replay(notificationId)
+                ? ResponseEntity.noContent().build()
+                : ResponseEntity.status(HttpStatus.CONFLICT).build();
+    }
+
     @GetMapping("/{notificationId}")
     public ResponseEntity<NotificationResponse> getById(@PathVariable String notificationId) {
         return notificationService.findById(notificationId)

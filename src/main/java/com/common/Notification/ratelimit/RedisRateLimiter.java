@@ -30,6 +30,14 @@ public class RedisRateLimiter {
     public boolean tryAcquire(String key, int limit, Duration window) {
         String redisKey = "ratelimit:" + key + ":" + (System.currentTimeMillis() / window.toMillis());
         try {
+            // Read before incrementing. Incrementing unconditionally would let rejected retries
+            // keep inflating the counter, so a throttled channel could never recover within its
+            // own window — each retry would push the count further past the limit.
+            String current = redis.opsForValue().get(redisKey);
+            if (current != null && Long.parseLong(current) >= limit) {
+                return false;
+            }
+
             Long count = redis.opsForValue().increment(redisKey);
             if (count == null) {
                 return true;
@@ -38,7 +46,12 @@ public class RedisRateLimiter {
                 // First hit in this window establishes the TTL, so keys cannot accumulate forever.
                 redis.expire(redisKey, window);
             }
+            // Check-then-increment is not atomic, so concurrent callers can overshoot slightly.
+            // Acceptable for protecting a provider quota; a Lua script would make it exact.
             return count <= limit;
+        } catch (NumberFormatException ex) {
+            log.warn("Unparseable rate limit counter at key={}, allowing request", redisKey);
+            return true;
         } catch (RuntimeException ex) {
             // Fail open. A Redis outage must not stop every notification in the platform;
             // losing rate limiting is strictly less bad than losing delivery entirely.

@@ -91,8 +91,13 @@ public class NotificationRecord {
     private Instant sentAt;
 
     /**
-     * Guards against two workers processing the same record concurrently after a partition
-     * rebalance — the loser of the race fails its commit rather than double-sending.
+     * Prevents lost updates when two workers touch the same record after a partition rebalance.
+     *
+     * <p>It does <em>not</em> prevent a duplicate send: the provider call happens before the
+     * status write, so both workers may have already sent. Genuine send-once would need the
+     * provider's own idempotency key. What stops duplicates in practice is the
+     * {@code isAlreadyDelivered()} check plus keying events by notification id, so redeliveries
+     * land on the same partition and are processed in order.
      */
     @Version
     @Column(name = "version")
@@ -143,6 +148,12 @@ public class NotificationRecord {
 
     public void recordAttempt() {
         this.attempts++;
+    }
+
+    /** Returns a dead-lettered notification to the start of the pipeline for a manual replay. */
+    public void resetToAccepted() {
+        this.status = NotificationStatus.ACCEPTED;
+        this.lastError = null;
     }
 
     public boolean isAlreadyDelivered() {

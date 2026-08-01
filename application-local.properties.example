@@ -7,3 +7,6 @@
 DB_URL=jdbc:mysql://localhost:3306/notification_db?characterEncoding=UTF-8
 DB_USERNAME=your_db_user
 DB_PASSWORD=your_db_password
+# Credential other services use to call this API (HTTP Basic).
+# Startup fails if this is unset — a notification sender must not be left open.
+NOTIFICATION_API_PASSWORD=choose_a_strong_password

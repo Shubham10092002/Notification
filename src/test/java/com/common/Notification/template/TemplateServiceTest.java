@@ -2,7 +2,6 @@ package com.common.Notification.template;
 
 import com.common.Notification.domain.Channel;
 import com.common.Notification.domain.NotificationTemplate;
-import com.common.Notification.domain.TemplateRepository;
 import com.common.Notification.exception.TemplateNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -13,23 +12,23 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class TemplateServiceTest {
 
     @Mock
-    private TemplateRepository templateRepository;
+    private TemplateLookup templateLookup;
 
     private TemplateService templateService;
 
     @BeforeEach
     void setUp() {
-        templateService = new TemplateService(templateRepository);
+        templateService = new TemplateService(templateLookup);
     }
 
     private void stubTemplate(String subject, String body) {
@@ -38,8 +37,19 @@ class TemplateServiceTest {
         template.setChannel(Channel.EMAIL);
         template.setSubject(subject);
         template.setBody(body);
-        when(templateRepository.findByCodeAndChannelAndActiveIsTrue("WELCOME", Channel.EMAIL))
-                .thenReturn(Optional.of(template));
+        when(templateLookup.find("WELCOME", Channel.EMAIL)).thenReturn(template);
+    }
+
+    @Test
+    @DisplayName("rendering resolves the template through the cached lookup bean, not directly")
+    void rendersViaCachedLookup() {
+        stubTemplate("Welcome {{name}}", "Hi {{name}}");
+
+        templateService.render("WELCOME", Channel.EMAIL, Map.of("name", "Shubham"));
+
+        // Regression guard: render() used to call a @Cacheable method on itself, which the
+        // Spring proxy cannot intercept, so Redis was never consulted on the hot path.
+        verify(templateLookup).find("WELCOME", Channel.EMAIL);
     }
 
     @Test
@@ -93,9 +103,9 @@ class TemplateServiceTest {
     }
 
     @Test
-    void throwsWhenTemplateMissing() {
-        when(templateRepository.findByCodeAndChannelAndActiveIsTrue("NOPE", Channel.SMS))
-                .thenReturn(Optional.empty());
+    void propagatesMissingTemplate() {
+        when(templateLookup.find("NOPE", Channel.SMS))
+                .thenThrow(new TemplateNotFoundException("NOPE", Channel.SMS));
 
         assertThatThrownBy(() -> templateService.render("NOPE", Channel.SMS, Map.of()))
                 .isInstanceOf(TemplateNotFoundException.class)

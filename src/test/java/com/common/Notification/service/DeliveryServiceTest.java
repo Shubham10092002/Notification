@@ -4,7 +4,6 @@ import com.common.Notification.channel.ChannelSender;
 import com.common.Notification.domain.Channel;
 import com.common.Notification.domain.NotificationRecord;
 import com.common.Notification.domain.NotificationRepository;
-import com.common.Notification.domain.NotificationStatus;
 import com.common.Notification.exception.NotificationDeliveryException;
 import com.common.Notification.exception.RateLimitExceededException;
 import com.common.Notification.ratelimit.RedisRateLimiter;
@@ -26,9 +25,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -37,6 +39,8 @@ class DeliveryServiceTest {
 
     @Mock
     private NotificationRepository notificationRepository;
+    @Mock
+    private NotificationStateWriter stateWriter;
     @Mock
     private RedisRateLimiter rateLimiter;
     @Mock
@@ -49,26 +53,26 @@ class DeliveryServiceTest {
         when(emailSender.channel()).thenReturn(Channel.EMAIL);
         when(rateLimiter.tryAcquire(anyString(), anyInt(), any(Duration.class))).thenReturn(true);
         deliveryService = new DeliveryService(
-                notificationRepository, rateLimiter, List.of(emailSender), new ChannelRateLimits());
+                notificationRepository, stateWriter, rateLimiter,
+                List.of(emailSender), new ChannelRateLimits());
     }
 
     private NotificationRecord record() {
-        return NotificationRecord.accept("req-1", "svc", Channel.EMAIL,
+        NotificationRecord record = NotificationRecord.accept("req-1", "svc", Channel.EMAIL,
                 "jane@example.com", "WELCOME", "Hi", "Hello");
+        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
+        return record;
     }
 
     @Test
-    @DisplayName("a successful send marks the record SENT and counts the attempt")
+    @DisplayName("a successful send is recorded as SENT")
     void deliversSuccessfully() {
         NotificationRecord record = record();
-        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
 
         deliveryService.deliver(record.getId(), Channel.EMAIL);
 
-        assertThat(record.getStatus()).isEqualTo(NotificationStatus.SENT);
-        assertThat(record.getAttempts()).isEqualTo(1);
-        assertThat(record.getSentAt()).isNotNull();
         verify(emailSender).send(record);
+        verify(stateWriter).markSent(record.getId());
     }
 
     @Test
@@ -76,41 +80,40 @@ class DeliveryServiceTest {
     void skipsAlreadyDelivered() {
         NotificationRecord record = record();
         record.markSent();
-        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
 
         deliveryService.deliver(record.getId(), Channel.EMAIL);
 
         verify(emailSender, never()).send(any());
+        verifyNoInteractions(stateWriter);
     }
 
     @Test
-    @DisplayName("hitting the rate limit throws so Kafka retries, and nothing is sent")
+    @DisplayName("hitting the rate limit throws so Kafka retries, and nothing is sent or recorded")
     void defersWhenRateLimited() {
         NotificationRecord record = record();
-        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
         when(rateLimiter.tryAcquire(anyString(), anyInt(), any(Duration.class))).thenReturn(false);
 
         assertThatThrownBy(() -> deliveryService.deliver(record.getId(), Channel.EMAIL))
                 .isInstanceOf(RateLimitExceededException.class);
 
         verify(emailSender, never()).send(any());
-        // Not counted as an attempt: being throttled is not a delivery failure.
-        assertThat(record.getAttempts()).isZero();
+        // Throttling is not a delivery attempt, so it must not burn the retry budget.
+        verifyNoInteractions(stateWriter);
     }
 
     @Test
-    @DisplayName("a provider failure records the error and rethrows for the retry handler")
-    void recordsFailureAndRethrows() {
+    @DisplayName("a provider failure is PERSISTED before the exception propagates")
+    void recordsFailureBeforeRethrowing() {
         NotificationRecord record = record();
-        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
         doThrow(new NotificationDeliveryException("smtp down")).when(emailSender).send(record);
 
         assertThatThrownBy(() -> deliveryService.deliver(record.getId(), Channel.EMAIL))
                 .isInstanceOf(NotificationDeliveryException.class);
 
-        assertThat(record.getStatus()).isEqualTo(NotificationStatus.FAILED);
-        assertThat(record.getLastError()).contains("smtp down");
-        assertThat(record.getAttempts()).isEqualTo(1);
+        // Regression guard: this used to be written inside the same transaction the rethrow
+        // rolled back, so attempts stayed at 0 and lastError was silently lost.
+        verify(stateWriter).markFailed(eq(record.getId()), contains("smtp down"));
+        verify(stateWriter, never()).markSent(anyString());
     }
 
     @Test
@@ -121,17 +124,27 @@ class DeliveryServiceTest {
         deliveryService.deliver("ghost", Channel.EMAIL);
 
         verify(emailSender, never()).send(any());
+        verifyNoInteractions(stateWriter);
+    }
+
+    @Test
+    @DisplayName("an unroutable channel is dead-lettered immediately, not retried")
+    void deadLettersUnknownChannel() {
+        NotificationRecord record = NotificationRecord.accept("req-2", "svc", Channel.SMS,
+                "+919876543210", "WELCOME", null, "Hello");
+        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
+
+        assertThatThrownBy(() -> deliveryService.deliver(record.getId(), Channel.SMS))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(stateWriter).markDeadLettered(eq(record.getId()), contains("No sender"));
     }
 
     @Test
     @DisplayName("retries exhausted parks the record as DEAD_LETTER")
     void marksDeadLettered() {
-        NotificationRecord record = record();
-        when(notificationRepository.findById(record.getId())).thenReturn(Optional.of(record));
+        deliveryService.markDeadLettered("abc", "gave up");
 
-        deliveryService.markDeadLettered(record.getId(), "gave up");
-
-        assertThat(record.getStatus()).isEqualTo(NotificationStatus.DEAD_LETTER);
-        assertThat(record.getLastError()).isEqualTo("gave up");
+        verify(stateWriter).markDeadLettered("abc", "gave up");
     }
 }

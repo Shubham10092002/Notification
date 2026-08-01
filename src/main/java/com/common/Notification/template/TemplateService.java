@@ -2,11 +2,7 @@ package com.common.Notification.template;
 
 import com.common.Notification.domain.Channel;
 import com.common.Notification.domain.NotificationTemplate;
-import com.common.Notification.domain.TemplateRepository;
-import com.common.Notification.exception.TemplateNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
@@ -17,9 +13,9 @@ import java.util.regex.Pattern;
  * The Template Service from the design doc: resolves a template by code + channel and renders
  * it against the caller's variables.
  *
- * <p>Templates change rarely and are read on every single notification, so lookups are cached
- * in Redis (the doc's "Redis Cache" concept). Rendering itself is deliberately not cached —
- * the output is per-recipient and caching it would be both useless and a PII leak.
+ * <p>Lookups are cached in Redis via {@link TemplateLookup} — a separate bean so the cache
+ * proxy is actually applied. Rendering itself is deliberately not cached: the output is
+ * per-recipient, so caching it would be both useless and a PII leak.
  */
 @Service
 @RequiredArgsConstructor
@@ -27,22 +23,18 @@ public class TemplateService {
 
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_.]+)\\s*}}");
 
-    private final TemplateRepository templateRepository;
+    private final TemplateLookup templateLookup;
 
-    @Cacheable(cacheNames = "templates", key = "#code + ':' + #channel")
     public NotificationTemplate find(String code, Channel channel) {
-        return templateRepository.findByCodeAndChannelAndActiveIsTrue(code, channel)
-                .orElseThrow(() -> new TemplateNotFoundException(code, channel));
+        return templateLookup.find(code, channel);
     }
 
-    /** Call after editing a template so workers stop serving the stale version. */
-    @CacheEvict(cacheNames = "templates", key = "#code + ':' + #channel")
     public void evict(String code, Channel channel) {
-        // Annotation-driven; nothing to do here.
+        templateLookup.evict(code, channel);
     }
 
     public Rendered render(String code, Channel channel, Map<String, Object> variables) {
-        NotificationTemplate template = find(code, channel);
+        NotificationTemplate template = templateLookup.find(code, channel);
         return new Rendered(
                 substitute(template.getSubject(), variables),
                 substitute(template.getBody(), variables)
