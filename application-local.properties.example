@@ -1,0 +1,9 @@
+# Copy this file to application-local.properties and fill in your local values.
+# application-local.properties is gitignored and must never be committed.
+#
+# It is picked up automatically via spring.config.import in application.properties.
+# Alternatively, export these as environment variables instead of using this file.
+
+DB_URL=jdbc:mysql://localhost:3306/notification_db?characterEncoding=UTF-8
+DB_USERNAME=your_db_user
+DB_PASSWORD=your_db_password
