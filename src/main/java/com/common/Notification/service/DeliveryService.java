@@ -1,6 +1,7 @@
 package com.common.Notification.service;
 
 import com.common.Notification.channel.ChannelSender;
+import com.common.Notification.channel.ChannelSenderRegistry;
 import com.common.Notification.domain.Channel;
 import com.common.Notification.domain.NotificationRecord;
 import com.common.Notification.domain.NotificationRepository;
@@ -10,9 +11,6 @@ import com.common.Notification.support.Redaction;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * The delivery half of the pipeline, shared by every channel worker.
@@ -33,21 +31,19 @@ public class DeliveryService {
     private final NotificationRepository notificationRepository;
     private final NotificationStateWriter stateWriter;
     private final RedisRateLimiter rateLimiter;
-    private final Map<Channel, ChannelSender> senders = new EnumMap<>(Channel.class);
+    private final ChannelSenderRegistry senderRegistry;
     private final ChannelRateLimits rateLimits;
 
     public DeliveryService(NotificationRepository notificationRepository,
                            NotificationStateWriter stateWriter,
                            RedisRateLimiter rateLimiter,
-                           List<ChannelSender> channelSenders,
+                           ChannelSenderRegistry senderRegistry,
                            ChannelRateLimits rateLimits) {
         this.notificationRepository = notificationRepository;
         this.stateWriter = stateWriter;
         this.rateLimiter = rateLimiter;
+        this.senderRegistry = senderRegistry;
         this.rateLimits = rateLimits;
-        for (ChannelSender sender : channelSenders) {
-            this.senders.put(sender.channel(), sender);
-        }
     }
 
     /**
@@ -71,7 +67,7 @@ public class DeliveryService {
             return;
         }
 
-        ChannelSender sender = senders.get(channel);
+        ChannelSender sender = senderRegistry.senderFor(channel);
         if (sender == null) {
             // Non-retryable: no amount of waiting will register a sender for this channel.
             stateWriter.markDeadLettered(notificationId, "No sender registered for channel " + channel);

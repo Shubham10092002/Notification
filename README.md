@@ -18,6 +18,7 @@ design doc.
 | Templates + Redis cache | Working |
 | Rate limiting (Redis) | Working |
 | Retry + DLQ | Working |
+| Circuit breaker (per channel) | Working |
 | DLT replay endpoint | Working |
 | Stuck-publish recovery sweeper | Working |
 | Push / WhatsApp | Not implemented (in the doc, out of current scope) |
@@ -52,6 +53,9 @@ Every failure mode and what the platform does about it:
 | **Kafka down at accept time** | Row commits as `ACCEPTED`; publish is attempted *after* commit and only a broker ack promotes it to `QUEUED`. `StuckNotificationSweeper` republishes anything left in `ACCEPTED`. The caller is never told "accepted" for something that silently vanished. |
 | **App crashes between commit and publish** | Same path — the row is `ACCEPTED`, the sweeper picks it up. |
 | **Provider (SMTP/SMS) transient failure** | `markFailed` commits in its own transaction, then the exception propagates so Kafka retries with exponential backoff. |
+| **Provider hangs (no response)** | SMTP connect/read/write timeouts cap an attempt at ~25s. Without them JavaMail waits forever and parks a consumer thread permanently. |
+| **Provider failing repeatedly** | The per-channel circuit breaker opens after a 50% failure rate over 20 calls, then fails fast for 30s instead of spending a timeout per message. Rejections stay retryable, and each channel has its own breaker so SMS cannot stop email. |
+| **Invalid inbound event** | Validated at the Kafka boundary with the same constraints as the REST body. Rejected as non-retryable straight to `notification.requests.DLT`. |
 | **Provider down beyond the retry window** | Dead-lettered to `<topic>.DLT` and the row becomes `DEAD_LETTER`. Recover with `POST /{id}/replay` once the provider is healthy. |
 | **Redis down** | Rate limiter **fails open** and template lookups fall through to the database. Delivery continues. |
 | **Rate limit hit** | Throws before counting an attempt, so Kafka redelivers after the window rolls. Rejections do not increment the counter, so a throttled channel recovers. |
@@ -66,6 +70,10 @@ Every failure mode and what the platform does about it:
 ## Scalability notes
 
 - `spring.kafka.listener.concurrency` (default 3) matches partition count; raise both together.
+- Kafka send callbacks run on a dedicated executor, never the producer's I/O thread — a database
+  write there would serialise every publish in the JVM behind JDBC latency.
+- Provider calls are bounded by SMTP timeouts and guarded by a circuit breaker, so an outage
+  cannot consume consumer threads on calls that are certain to fail.
 - Provider calls happen **outside** any database transaction, so a slow SMTP server cannot pin
   connections from the Hikari pool.
 - State transitions are short `REQUIRES_NEW` transactions, not long-lived ones.
@@ -169,6 +177,9 @@ Everything below is overridable by environment variable.
 | `notification.rate-limit.email-per-minute` | `600` | Email budget |
 | `notification.rate-limit.sms-per-minute` | `120` | SMS budget |
 | `notification.retry.max-elapsed-time-ms` | `120000` | Retry window before DLT (2 min) |
+| `MAIL_CONNECT_TIMEOUT_MS` / `MAIL_READ_TIMEOUT_MS` / `MAIL_WRITE_TIMEOUT_MS` | `5000` / `10000` / `10000` | SMTP timeouts — **JavaMail defaults to infinite** |
+| `notification.circuit-breaker.failure-rate-threshold` | `50` | % failures over the sliding window before opening |
+| `notification.circuit-breaker.open-seconds` | `30` | How long the breaker stays open before probing |
 | `NOTIFICATION_API_USER` / `NOTIFICATION_API_PASSWORD` | — | HTTP Basic credential; **startup fails without the password** |
 | `KAFKA_LISTENER_CONCURRENCY` | `3` | Consumer threads per listener |
 | `notification.sweeper.stuck-after-seconds` | `60` | Age at which an `ACCEPTED` row is republished |

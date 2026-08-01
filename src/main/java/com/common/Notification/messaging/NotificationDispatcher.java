@@ -3,11 +3,13 @@ package com.common.Notification.messaging;
 import com.common.Notification.domain.Channel;
 import com.common.Notification.service.NotificationAcceptedEvent;
 import com.common.Notification.service.NotificationStateWriter;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
+
+import java.util.concurrent.Executor;
 
 /**
  * Publishes accepted notifications to Kafka once — and only once — the database transaction has
@@ -28,12 +30,20 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * notification, without needing a separate outbox table.
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class NotificationDispatcher {
 
     private final NotificationEventProducer eventProducer;
     private final NotificationStateWriter stateWriter;
+    private final Executor callbackExecutor;
+
+    public NotificationDispatcher(NotificationEventProducer eventProducer,
+                                  NotificationStateWriter stateWriter,
+                                  @Qualifier("kafkaCallbackExecutor") Executor callbackExecutor) {
+        this.eventProducer = eventProducer;
+        this.stateWriter = stateWriter;
+        this.callbackExecutor = callbackExecutor;
+    }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onNotificationAccepted(NotificationAcceptedEvent event) {
@@ -43,7 +53,9 @@ public class NotificationDispatcher {
     /** Also used by the sweeper when replaying a notification whose publish never landed. */
     public void dispatch(String notificationId, Channel channel) {
         eventProducer.publish(notificationId, channel)
-                .whenComplete((result, throwable) -> {
+                // whenCompleteAsync, not whenComplete: the callback writes to the database and
+                // must not run on the producer's I/O thread.
+                .whenCompleteAsync((result, throwable) -> {
                     if (throwable != null) {
                         // Leave the row in ACCEPTED so the sweeper retries it. Do not fail the
                         // caller: the notification is durable, only its dispatch is delayed.
@@ -52,6 +64,6 @@ public class NotificationDispatcher {
                         return;
                     }
                     stateWriter.markQueued(notificationId);
-                });
+                }, callbackExecutor);
     }
 }

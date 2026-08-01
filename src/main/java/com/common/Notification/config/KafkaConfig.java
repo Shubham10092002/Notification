@@ -1,5 +1,6 @@
 package com.common.Notification.config;
 
+import com.common.Notification.exception.InvalidNotificationEventException;
 import com.common.Notification.exception.TemplateNotFoundException;
 import com.common.Notification.messaging.KafkaTopics;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -99,8 +100,11 @@ public class KafkaConfig {
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, backOff);
 
-        // A missing template cannot fix itself; retrying just delays the inevitable DLT entry.
-        errorHandler.addNotRetryableExceptions(TemplateNotFoundException.class);
+        // Neither of these can fix itself on redelivery; retrying only delays the DLT entry and
+        // blocks the partition behind it.
+        errorHandler.addNotRetryableExceptions(
+                TemplateNotFoundException.class,
+                InvalidNotificationEventException.class);
 
         return errorHandler;
     }

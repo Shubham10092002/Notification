@@ -1,6 +1,7 @@
 package com.common.Notification.service;
 
 import com.common.Notification.channel.ChannelSender;
+import com.common.Notification.channel.ChannelSenderRegistry;
 import com.common.Notification.domain.Channel;
 import com.common.Notification.domain.NotificationRecord;
 import com.common.Notification.domain.NotificationRepository;
@@ -17,7 +18,6 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,16 +45,19 @@ class DeliveryServiceTest {
     private RedisRateLimiter rateLimiter;
     @Mock
     private ChannelSender emailSender;
+    @Mock
+    private ChannelSenderRegistry senderRegistry;
 
     private DeliveryService deliveryService;
 
     @BeforeEach
     void setUp() {
-        when(emailSender.channel()).thenReturn(Channel.EMAIL);
+        when(senderRegistry.senderFor(Channel.EMAIL)).thenReturn(emailSender);
+        when(senderRegistry.senderFor(Channel.SMS)).thenReturn(null);
         when(rateLimiter.tryAcquire(anyString(), anyInt(), any(Duration.class))).thenReturn(true);
         deliveryService = new DeliveryService(
                 notificationRepository, stateWriter, rateLimiter,
-                List.of(emailSender), new ChannelRateLimits());
+                senderRegistry, new ChannelRateLimits());
     }
 
     private NotificationRecord record() {
