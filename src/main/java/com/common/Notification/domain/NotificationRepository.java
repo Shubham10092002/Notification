@@ -16,7 +16,12 @@ public interface NotificationRepository extends JpaRepository<NotificationRecord
      *
      * <p>Bounded and oldest-first so a long broker outage drains in fair order without loading
      * an unbounded backlog into memory.
+     *
+     * <p>Returns a projection, so Spring Data generates {@code select id, channel} rather than
+     * selecting whole rows. The sweeper only needs those two fields, and full entities would drag
+     * every {@code @Lob} body and recipient into memory — tens of megabytes per sweep, discarded
+     * immediately, at exactly the moment the system is already degraded.
      */
-    List<NotificationRecord> findTop200ByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+    List<NotificationDispatchView> findTop200ByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
             NotificationStatus status, Instant createdBefore);
 }

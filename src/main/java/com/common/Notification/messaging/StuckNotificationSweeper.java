@@ -1,6 +1,6 @@
 package com.common.Notification.messaging;
 
-import com.common.Notification.domain.NotificationRecord;
+import com.common.Notification.domain.NotificationDispatchView;
 import com.common.Notification.domain.NotificationRepository;
 import com.common.Notification.domain.NotificationStatus;
 import lombok.RequiredArgsConstructor;
@@ -47,7 +47,7 @@ public class StuckNotificationSweeper {
     @Transactional(readOnly = true)
     public void republishStuckNotifications() {
         Instant cutoff = Instant.now().minus(stuckAfterSeconds, ChronoUnit.SECONDS);
-        List<NotificationRecord> stuck = notificationRepository
+        List<NotificationDispatchView> stuck = notificationRepository
                 .findTop200ByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
                         NotificationStatus.ACCEPTED, cutoff);
 
@@ -57,7 +57,7 @@ public class StuckNotificationSweeper {
 
         log.warn("Found {} notification(s) stuck in ACCEPTED past {}s; republishing",
                 stuck.size(), stuckAfterSeconds);
-        for (NotificationRecord record : stuck) {
+        for (NotificationDispatchView record : stuck) {
             dispatcher.dispatch(record.getId(), record.getChannel());
         }
     }
